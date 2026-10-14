@@ -40,6 +40,7 @@ dialog label{display:block;font-size:12px;color:var(--mu);margin-top:8px}dialog 
 <span class="mu" id="cnt"></span>
 <span style="margin-left:auto"></span><button onclick="sample()">サンプル投入</button><button onclick="clearAll()">全削除</button>
 </div>
+<div id="msg" class="mu" style="padding:0 14px"></div>
 <main>
 <section id="s-map" class="on"><div id="map"></div>
 <p class="mu"><span class="dot" style="background:#d9822b"></span>イワナ <span class="dot" style="background:#2a7fd4"></span>ヤマメ <span class="dot" style="background:#888"></span>その他　／ 円の大きさ＝サイズ。円をタップで詳細・編集</p></section>
@@ -67,7 +68,7 @@ dialog label{display:block;font-size:12px;color:var(--mu);margin-top:8px}dialog 
 <label>メモ</label><textarea id="e_note" rows="2"></textarea>
 <label>緯度 / 経度</label><div style="display:flex;gap:6px"><input id="e_lat" type="number" step="any"><input id="e_lng" type="number" step="any"></div>
 <div style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap">
-<button class="p" onclick="saveE()">保存</button><button onclick="autoWx()">天気を自動取得</button><button onclick="delE()">削除</button><button onclick="$('#dlg').close()">閉じる</button></div>
+<button class="p" onclick="saveE()">保存</button><button onclick="pickLoc()">📍地図で位置を指定</button><button onclick="autoWx()">天気を自動取得</button><button onclick="delE()">削除</button><button onclick="$('#dlg').close()">閉じる</button></div>
 <div class="mu" id="emsg"></div></form></dialog>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
@@ -107,7 +108,7 @@ const filt=()=>recs.filter(r=>(!$('#fy').value||yr(r)==$('#fy').value)&&(!$('#fm
 $('#rm').onchange=renderRoute;
 
 /* ---- render ---- */
-function render(){initFilters();const f=filt();$('#cnt').textContent=f.length+'件';renderMap(f);renderList(f);renderCharts();renderRoute()}
+function render(){initFilters();const f=filt();const ng=f.filter(r=>r.lat==null).length;$('#cnt').textContent=f.length+'件'+(ng?`（位置なし${ng}件は地図に出ません）`:'');renderMap(f);renderList(f);renderCharts();renderRoute()}
 function renderMap(f){
   lay.clearLayers();routeLay.clearLayers();const pts=[];
   f.filter(r=>r.lat!=null).forEach(r=>{
@@ -184,26 +185,41 @@ function addManual(){const c=map.getCenter(),d=new Date(),p=n=>String(n).padStar
 /* ---- weather ---- */
 async function wx(r){
   const d=r.dt.slice(0,10),u=`https://archive-api.open-meteo.com/v1/archive?latitude=${r.lat}&longitude=${r.lng}&start_date=${d}&end_date=${d}&hourly=temperature_2m,precipitation,weather_code&timezone=Asia%2FTokyo`;
-  const j=await(await fetch(u)).json(),h=+r.dt.slice(11,13);
+  const j=await(await fetch(u,{signal:AbortSignal.timeout(8000)})).json(),h=+r.dt.slice(11,13);
   r.air=j.hourly.temperature_2m[h];r.rain=j.hourly.precipitation[h];r.wx=WX(j.hourly.weather_code[h]);
 }
 
 /* ---- photo import ---- */
 async function thumb(f){try{const b=await createImageBitmap(f,{imageOrientation:'from-image'}),s=96/Math.min(b.width,b.height),c=document.createElement('canvas');c.width=Math.round(b.width*s);c.height=Math.round(b.height*s);c.getContext('2d').drawImage(b,0,0,c.width,c.height);return c.toDataURL('image/jpeg',.6)}catch(e){return null}}
+const msg=t=>{$('#msg').textContent=t};
+let pick=null;
+function pickLoc(){readE();save();pick=cur;$('#dlg').close();setTab('map');msg('📍 地図をタップして撮影場所を指定してください');}
+map.on('click',e=>{if(!pick)return;const r=pick;pick=null;r.lat=+e.latlng.lat.toFixed(5);r.lng=+e.latlng.lng.toFixed(5);save();msg('位置を設定しました');render();edit(r.id)});
 $('#file').onchange=async e=>{
-  const fs=[...e.target.files];let ok=0,nogps=0;const p=n=>String(n).padStart(2,'0');
-  for(const f of fs){
-    try{
-      const t=await exifr.parse(f,{pick:['DateTimeOriginal','CreateDate'],gps:true}).catch(()=>null)||{};
-      const g=await exifr.gps(f).catch(()=>null);
-      const d=t.DateTimeOriginal||t.CreateDate||new Date(f.lastModified);
-      const r={id:uid(),dt:`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`,sp:'イワナ',size:null,water:null,air:null,wx:'',fly:'',note:'',lat:g?+g.latitude.toFixed(5):null,lng:g?+g.longitude.toFixed(5):null,thumb:await thumb(f)};
-      if(!g)nogps++;else{try{await wx(r)}catch(_){}}
-      recs.push(r);ok++;
-    }catch(err){}
+  const fs=[...e.target.files];if(!fs.length)return;
+  const p=n=>String(n).padStart(2,'0'),fmt=d=>`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  let ok=0,dup=0,nogps=0;const added=[];
+  for(let i=0;i<fs.length;i++){
+    const f=fs[i];msg(`取り込み中 ${i+1}/${fs.length}…`);
+    if(recs.some(r=>r.fn==f.name&&r.fs==f.size)){dup++;continue}
+    let t={},g=null;
+    try{if(window.exifr){t=(await exifr.parse(f,{pick:['DateTimeOriginal','CreateDate'],gps:true}))||{};g=await exifr.gps(f)}}catch(_){}
+    let d=t.DateTimeOriginal||t.CreateDate;
+    if(!(d instanceof Date)||isNaN(d)){
+      const m=f.name.match(/(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})/);
+      d=m?(/^PXL_/i.test(f.name)?new Date(Date.UTC(+m[1],m[2]-1,+m[3],+m[4],+m[5])):new Date(+m[1],m[2]-1,+m[3],+m[4],+m[5])):new Date(f.lastModified);
+    }
+    const has=g&&g.latitude!=null;
+    const r={id:uid(),fn:f.name,fs:f.size,dt:fmt(d),sp:'イワナ',size:null,water:null,air:null,wx:'',fly:'',note:'',lat:has?+g.latitude.toFixed(5):null,lng:has?+g.longitude.toFixed(5):null,thumb:await thumb(f)};
+    if(!has)nogps++;
+    recs.push(r);added.push(r);ok++;
   }
-  save();e.target.value='';renderMap.fit=0;render();setTab('list');
-  alert(`${ok}枚を取り込みました。`+(nogps?`\n${nogps}枚は位置情報なし（記録タブから緯度経度を入力できます）。`:'')+'\n魚種・サイズ・水温は記録タブで追記してください。');
+  e.target.value='';save();renderMap.fit=0;render();
+  const base=ok?`${ok}件を取り込みました（位置あり${ok-nogps}件／位置なし${nogps}件）`:(dup?`${dup}件は取り込み済みです`:'取り込めませんでした');
+  msg(base+(dup&&ok?`／重複${dup}件は除外`:''));
+  if(ok)setTab(nogps==ok?'list':'map');
+  if(nogps)alert(`${nogps}件は写真に位置情報がありませんでした。\n記録タブで写真をタップし「📍地図で位置を指定」から場所を設定できます。\n（Androidの写真ピッカーは位置情報を除去することがあります）`);
+  (async()=>{let n=0;for(const r of added){if(r.lat==null)continue;try{await wx(r);n++}catch(_){}}if(n){save();render();msg(base+`／天気を${n}件補完`)}})();
 };
 
 /* ---- export / import / sample ---- */
