@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>渓流釣果マップ</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+:root{--bg:#f6f7f4;--card:#fff;--tx:#1d2a22;--mu:#6b776f;--ac:#2f7d5b;--bd:#dde2dc}
+@media(prefers-color-scheme:dark){:root{--bg:#141a16;--card:#1e2822;--tx:#e6ede8;--mu:#93a39a;--ac:#4fb184;--bd:#2f3d34}}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,"Hiragino Sans","Noto Sans JP",sans-serif;background:var(--bg);color:var(--tx)}
+header{padding:10px 14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--card);border-bottom:1px solid var(--bd)}
+h1{font-size:17px;margin:0 auto 0 0}
+button,select,input,textarea{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:6px 10px}
+button{cursor:pointer}button.p{background:var(--ac);color:#fff;border-color:var(--ac)}
+nav{display:flex;gap:4px;padding:8px 14px 0}nav button{border-radius:8px 8px 0 0;border-bottom:none}nav button.on{background:var(--ac);color:#fff}
+.bar{display:flex;flex-wrap:wrap;gap:8px;padding:8px 14px;align-items:center}
+main{padding:0 14px 20px}section{display:none}section.on{display:block}
+#map{height:62vh;min-height:340px;border-radius:12px;border:1px solid var(--bd)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:10px}
+.card h3{margin:0 0 6px;font-size:14px}canvas{max-height:260px}
+.row{display:flex;gap:10px;align-items:center;padding:8px;border-bottom:1px solid var(--bd);cursor:pointer}
+.row img,.ph{width:48px;height:48px;border-radius:8px;object-fit:cover;background:var(--bd);flex:none}
+.mu{color:var(--mu);font-size:12px}.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px}
+dialog{border:1px solid var(--bd);border-radius:12px;background:var(--card);color:var(--tx);max-width:440px;width:92%}
+dialog label{display:block;font-size:12px;color:var(--mu);margin-top:8px}dialog input,dialog select,dialog textarea{width:100%}
+.n{background:var(--ac);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;border:2px solid #fff}
+</style></head><body>
+<header>
+<h1>🎣 渓流釣果マップ</h1>
+<button class="p" onclick="$('#file').click()">📷 写真を取り込む</button>
+<input id="file" type="file" accept="image/*" multiple hidden>
+<button onclick="addManual()">＋手入力</button>
+<button onclick="exportJ()">書き出し</button>
+<button onclick="$('#imp').click()">読み込み</button>
+<input id="imp" type="file" accept=".json" hidden>
+</header>
+<nav id="tabs"><button data-t="map" class="on">地図</button><button data-t="list">記録</button><button data-t="ana">分析</button><button data-t="route">ルート提案</button></nav>
+<div class="bar" id="fbar">
+<select id="fy"></select><select id="fm"></select><select id="fs"></select>
+<span class="mu" id="cnt"></span>
+<span style="margin-left:auto"></span><button onclick="sample()">サンプル投入</button><button onclick="clearAll()">全削除</button>
+</div>
+<main>
+<section id="s-map" class="on"><div id="map"></div>
+<p class="mu"><span class="dot" style="background:#d9822b"></span>イワナ <span class="dot" style="background:#2a7fd4"></span>ヤマメ <span class="dot" style="background:#888"></span>その他　／ 円の大きさ＝サイズ。円をタップで詳細・編集</p></section>
+<section id="s-list"><div class="card" id="list"></div></section>
+<section id="s-ana"><div class="grid">
+<div class="card"><h3>月別の釣果数（年ごとに比較）</h3><canvas id="c1"></canvas></div>
+<div class="card"><h3>月別の平均サイズ cm（年ごと）</h3><canvas id="c2"></canvas></div>
+<div class="card"><h3>水温とサイズの関係</h3><canvas id="c3"></canvas></div>
+<div class="card"><h3>水温帯ごとの釣果数（釣れる水温帯）</h3><canvas id="c4"></canvas></div>
+</div><p class="mu">※分析では「年」「月」フィルタは使わず、魚種フィルタのみ反映します。</p></section>
+<section id="s-route"><div class="bar" style="padding:8px 0">対象月：<select id="rm"></select><button class="p" onclick="showRoute()">地図にルートを表示</button></div>
+<div class="card" id="rlist"></div>
+<p class="mu">過去の釣果を約500mのエリアにまとめ、釣果数とサイズでスコア化。上位から近い順に巡る案です（川の流れや林道は考慮していません）。</p></section>
+</main>
+
+<dialog id="dlg"><form method="dialog" id="frm" onsubmit="return false">
+<b>釣果の編集</b><div id="dthumb"></div>
+<label>日時</label><input type="datetime-local" id="e_dt">
+<label>魚種</label><select id="e_sp"><option>イワナ</option><option>ヤマメ</option><option>その他</option></select>
+<label>サイズ (cm)</label><input type="number" id="e_size" step="0.5">
+<label>水温 (℃)</label><input type="number" id="e_water" step="0.5">
+<label>気温 (℃)</label><input type="number" id="e_air" step="0.1">
+<label>天気</label><input id="e_wx">
+<label>フライ・釣り方</label><input id="e_fly">
+<label>メモ</label><textarea id="e_note" rows="2"></textarea>
+<label>緯度 / 経度</label><div style="display:flex;gap:6px"><input id="e_lat" type="number" step="any"><input id="e_lng" type="number" step="any"></div>
+<div style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap">
+<button class="p" onclick="saveE()">保存</button><button onclick="autoWx()">天気を自動取得</button><button onclick="delE()">削除</button><button onclick="$('#dlg').close()">閉じる</button></div>
+<div class="mu" id="emsg"></div></form></dialog>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/lite.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const COL={'イワナ':'#d9822b','ヤマメ':'#2a7fd4','その他':'#888'};
+const PAL=['#2f7d5b','#d9822b','#2a7fd4','#b04ab0','#c94f4f','#8a8a2a'];
+let recs=[];try{recs=JSON.parse(localStorage.getItem('fishlog')||'[]')}catch(e){}
+const save=()=>{try{localStorage.setItem('fishlog',JSON.stringify(recs))}catch(e){alert('保存容量が不足しています。JSONで書き出してください')}};
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+const num=v=>v===''||v==null||isNaN(+v)?null:+v;
+const yr=r=>r.dt.slice(0,4),mo=r=>+r.dt.slice(5,7);
+const WX=c=>c==null?'':c==0?'快晴':c<=2?'晴れ':c==3?'曇り':c<=48?'霧':c<=57?'霧雨':c<=67?'雨':c<=77?'雪':c<=82?'にわか雨':'雷雨';
+
+/* ---- map ---- */
+const map=L.map('map').setView([35.4,134.1],10);
+const gsi=(p,ext='png',z=18)=>L.tileLayer(`https://cyberjapandata.gsi.go.jp/xyz/${p}/{z}/{x}/{y}.${ext}`,{maxZoom:19,maxNativeZoom:z,attribution:'<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>'});
+const base={'標準地図':gsi('std'),'淡色地図':gsi('pale'),'空中写真':gsi('seamlessphoto','jpg'),'色別標高図':gsi('relief',"png",15)};
+base['標準地図'].addTo(map);L.control.layers(base,null,{position:'topright'}).addTo(map);
+const lay=L.layerGroup().addTo(map),routeLay=L.layerGroup().addTo(map);
+
+/* ---- filters ---- */
+function initFilters(){
+  const ys=[...new Set(recs.map(yr))].sort();
+  const cur=[$('#fy').value,$('#fm').value,$('#fs').value];
+  $('#fy').innerHTML='<option value="">全年</option>'+ys.map(y=>`<option>${y}</option>`).join('');
+  $('#fm').innerHTML='<option value="">全月</option>'+[...Array(12)].map((_,i)=>`<option value="${i+1}">${i+1}月</option>`).join('');
+  $('#fs').innerHTML='<option value="">全魚種</option><option>イワナ</option><option>ヤマメ</option><option>その他</option>';
+  $('#fy').value=cur[0];$('#fm').value=cur[1];$('#fs').value=cur[2];
+  if(!$('#rm').innerHTML)$('#rm').innerHTML=[...Array(12)].map((_,i)=>`<option value="${i+1}">${i+1}月</option>`).join('');
+  if(!$('#rm').dataset.set){$('#rm').value=new Date().getMonth()+1;$('#rm').dataset.set=1}
+}
+const filt=()=>recs.filter(r=>(!$('#fy').value||yr(r)==$('#fy').value)&&(!$('#fm').value||mo(r)==$('#fm').value)&&(!$('#fs').value||r.sp==$('#fs').value));
+['fy','fm','fs'].forEach(i=>$('#'+i).onchange=render);
+$('#rm').onchange=renderRoute;
+
+/* ---- render ---- */
+function render(){initFilters();const f=filt();$('#cnt').textContent=f.length+'件';renderMap(f);renderList(f);renderCharts();renderRoute()}
+function renderMap(f){
+  lay.clearLayers();routeLay.clearLayers();const pts=[];
+  f.filter(r=>r.lat!=null).forEach(r=>{
+    pts.push([r.lat,r.lng]);
+    const m=L.circleMarker([r.lat,r.lng],{radius:5+(r.size||15)/3,color:'#fff',weight:1.5,fillColor:COL[r.sp]||'#888',fillOpacity:.8}).addTo(lay);
+    m.bindPopup(`${r.thumb?`<img src="${r.thumb}" width="96"><br>`:''}<b>${r.sp} ${r.size?r.size+'cm':''}</b><br>${r.dt.replace('T',' ')}<br>水温${r.water??'-'}℃ 気温${r.air??'-'}℃ ${r.wx||''}<br>${r.fly||''}<br><a href="#" onclick="edit('${r.id}');return false">編集</a>`);
+  });
+  if(pts.length&&!renderMap.fit){map.fitBounds(pts,{padding:[30,30],maxZoom:14});renderMap.fit=1}
+}
+function renderList(f){
+  $('#list').innerHTML=f.length?[...f].sort((a,b)=>b.dt.localeCompare(a.dt)).map(r=>`<div class="row" onclick="edit('${r.id}')">${r.thumb?`<img src="${r.thumb}">`:'<div class="ph"></div>'}<div><b><span class="dot" style="background:${COL[r.sp]}"></span>${r.sp} ${r.size?r.size+'cm':'サイズ未入力'}</b><div class="mu">${r.dt.replace('T',' ')} ／ 水温${r.water??'-'}℃ 気温${r.air??'-'}℃ ${r.wx||''} ${r.lat==null?'／位置なし':''}</div></div></div>`).join(''):'<p class="mu">記録がありません。「写真を取り込む」か「サンプル投入」を試してください。</p>';
+}
+let ch={};const mk=(id,c)=>{ch[id]&&ch[id].destroy();ch[id]=new Chart($('#'+id),c)};
+function renderCharts(){
+  const rs=recs.filter(r=>!$('#fs').value||r.sp==$('#fs').value);
+  const ys=[...new Set(rs.map(yr))].sort(),M=[...Array(12)].map((_,i)=>(i+1)+'月');
+  const sub=(y,m)=>rs.filter(r=>yr(r)==y&&mo(r)==m+1);
+  mk('c1',{type:'bar',data:{labels:M,datasets:ys.map((y,i)=>({label:y,backgroundColor:PAL[i%6],data:M.map((_,m)=>sub(y,m).length)}))},options:{scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});
+  mk('c2',{type:'line',data:{labels:M,datasets:ys.map((y,i)=>({label:y,borderColor:PAL[i%6],backgroundColor:PAL[i%6],spanGaps:true,data:M.map((_,m)=>{const a=sub(y,m).filter(r=>r.size);return a.length?+(a.reduce((s,r)=>s+r.size,0)/a.length).toFixed(1):null})}))}});
+  mk('c3',{type:'scatter',data:{datasets:['イワナ','ヤマメ','その他'].map(s=>({label:s,backgroundColor:COL[s],data:rs.filter(r=>r.sp==s&&r.water!=null&&r.size).map(r=>({x:r.water,y:r.size}))}))},options:{scales:{x:{title:{display:true,text:'水温 ℃'}},y:{title:{display:true,text:'サイズ cm'}}}}});
+  const bins=[...Array(11)].map((_,i)=>i*2),wr=rs.filter(r=>r.water!=null);
+  mk('c4',{type:'bar',data:{labels:bins.map(b=>b+'-'+(b+2)+'℃'),datasets:[{label:'釣果数',backgroundColor:'#2a7fd4',data:bins.map(b=>wr.filter(r=>r.water>=b&&r.water<b+2).length)}]},options:{scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});
+}
+
+/* ---- route ---- */
+function spots(){
+  const m=+$('#rm').value,g={};
+  recs.filter(r=>r.lat!=null&&mo(r)==m&&(!$('#fs').value||r.sp==$('#fs').value)).forEach(r=>{
+    const k=(Math.round(r.lat*200)/200)+','+(Math.round(r.lng*200)/200);(g[k]=g[k]||[]).push(r)});
+  return Object.values(g).map(a=>{
+    const sz=a.filter(r=>r.size),w=a.filter(r=>r.water!=null);
+    const lat=a.reduce((s,r)=>s+r.lat,0)/a.length,lng=a.reduce((s,r)=>s+r.lng,0)/a.length;
+    const avg=sz.length?sz.reduce((s,r)=>s+r.size,0)/sz.length:0;
+    return{lat,lng,n:a.length,avg,max:Math.max(0,...sz.map(r=>r.size)),score:a.length+avg/10,
+      yrs:[...new Set(a.map(yr))].length,wt:w.length?w.reduce((s,r)=>s+r.water,0)/w.length:null}
+  }).sort((a,b)=>b.score-a.score).slice(0,6);
+}
+function order(s){
+  if(!s.length)return[];const o=[s[0]],rest=s.slice(1);
+  while(rest.length){const l=o[o.length-1];rest.sort((a,b)=>Math.hypot(a.lat-l.lat,a.lng-l.lng)-Math.hypot(b.lat-l.lat,b.lng-l.lng));o.push(rest.shift())}return o}
+function renderRoute(){
+  const s=spots();
+  $('#rlist').innerHTML=s.length?order(s).map((p,i)=>`<div class="row"><div class="n">${i+1}</div><div><b>${p.n}匹 ／ 平均${p.avg?p.avg.toFixed(1):'-'}cm 最大${p.max||'-'}cm</b><div class="mu">${p.yrs}年分の実績 ／ 平均水温${p.wt!=null?p.wt.toFixed(1)+'℃':'-'} ／ ${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</div></div></div>`).join(''):'<p class="mu">この月の位置付き記録がありません。</p>';
+}
+function showRoute(){
+  const o=order(spots());if(!o.length)return;
+  setTab('map');routeLay.clearLayers();
+  o.forEach((p,i)=>L.marker([p.lat,p.lng],{icon:L.divIcon({className:'',html:`<div class="n">${i+1}</div>`,iconSize:[24,24]})}).addTo(routeLay).bindPopup(`${p.n}匹 平均${p.avg.toFixed(1)}cm`));
+  L.polyline(o.map(p=>[p.lat,p.lng]),{color:'#2f7d5b',dashArray:'6 6'}).addTo(routeLay);
+  map.fitBounds(o.map(p=>[p.lat,p.lng]),{padding:[40,40],maxZoom:14});
+}
+
+/* ---- tabs ---- */
+function setTab(t){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t==t));document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id=='s-'+t));$('#fbar').style.display=t=='ana'||t=='route'?'none':'';if(t=='map')setTimeout(()=>map.invalidateSize(),50);if(t=='ana')renderCharts()}
+document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>setTab(b.dataset.t));
+
+/* ---- edit ---- */
+let cur=null;
+function edit(id){
+  cur=recs.find(r=>r.id==id);if(!cur)return;const r=cur;
+  $('#dthumb').innerHTML=r.thumb?`<img src="${r.thumb}" style="width:100%;max-height:160px;object-fit:cover;border-radius:8px;margin-top:6px">`:'';
+  $('#e_dt').value=r.dt;$('#e_sp').value=r.sp;$('#e_size').value=r.size??'';$('#e_water').value=r.water??'';$('#e_air').value=r.air??'';
+  $('#e_wx').value=r.wx||'';$('#e_fly').value=r.fly||'';$('#e_note').value=r.note||'';$('#e_lat').value=r.lat??'';$('#e_lng').value=r.lng??'';
+  $('#emsg').textContent='';$('#dlg').showModal();
+}
+function readE(){const r=cur;r.dt=$('#e_dt').value||r.dt;r.sp=$('#e_sp').value;r.size=num($('#e_size').value);r.water=num($('#e_water').value);r.air=num($('#e_air').value);r.wx=$('#e_wx').value;r.fly=$('#e_fly').value;r.note=$('#e_note').value;r.lat=num($('#e_lat').value);r.lng=num($('#e_lng').value)}
+function saveE(){readE();save();$('#dlg').close();render()}
+function delE(){if(confirm('この記録を削除しますか？')){recs=recs.filter(r=>r!==cur);save();$('#dlg').close();render()}}
+async function autoWx(){readE();$('#emsg').textContent='取得中…';try{await wx(cur);$('#e_air').value=cur.air;$('#e_wx').value=cur.wx;$('#emsg').textContent='取得しました（降水量'+cur.rain+'mm）'}catch(e){$('#emsg').textContent='取得できませんでした（位置・日付・通信を確認。直近数日分は未反映のことがあります）'}}
+function addManual(){const c=map.getCenter(),d=new Date(),p=n=>String(n).padStart(2,'0');
+  const r={id:uid(),dt:`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:00`,sp:'イワナ',size:null,water:null,air:null,wx:'',fly:'',note:'',lat:+c.lat.toFixed(5),lng:+c.lng.toFixed(5)};
+  recs.push(r);save();render();edit(r.id)}
+
+/* ---- weather ---- */
+async function wx(r){
+  const d=r.dt.slice(0,10),u=`https://archive-api.open-meteo.com/v1/archive?latitude=${r.lat}&longitude=${r.lng}&start_date=${d}&end_date=${d}&hourly=temperature_2m,precipitation,weather_code&timezone=Asia%2FTokyo`;
+  const j=await(await fetch(u)).json(),h=+r.dt.slice(11,13);
+  r.air=j.hourly.temperature_2m[h];r.rain=j.hourly.precipitation[h];r.wx=WX(j.hourly.weather_code[h]);
+}
+
+/* ---- photo import ---- */
+async function thumb(f){try{const b=await createImageBitmap(f,{imageOrientation:'from-image'}),s=96/Math.min(b.width,b.height),c=document.createElement('canvas');c.width=Math.round(b.width*s);c.height=Math.round(b.height*s);c.getContext('2d').drawImage(b,0,0,c.width,c.height);return c.toDataURL('image/jpeg',.6)}catch(e){return null}}
+$('#file').onchange=async e=>{
+  const fs=[...e.target.files];let ok=0,nogps=0;const p=n=>String(n).padStart(2,'0');
+  for(const f of fs){
+    try{
+      const t=await exifr.parse(f,{pick:['DateTimeOriginal','CreateDate'],gps:true}).catch(()=>null)||{};
+      const g=await exifr.gps(f).catch(()=>null);
+      const d=t.DateTimeOriginal||t.CreateDate||new Date(f.lastModified);
+      const r={id:uid(),dt:`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`,sp:'イワナ',size:null,water:null,air:null,wx:'',fly:'',note:'',lat:g?+g.latitude.toFixed(5):null,lng:g?+g.longitude.toFixed(5):null,thumb:await thumb(f)};
+      if(!g)nogps++;else{try{await wx(r)}catch(_){}}
+      recs.push(r);ok++;
+    }catch(err){}
+  }
+  save();e.target.value='';renderMap.fit=0;render();setTab('list');
+  alert(`${ok}枚を取り込みました。`+(nogps?`\n${nogps}枚は位置情報なし（記録タブから緯度経度を入力できます）。`:'')+'\n魚種・サイズ・水温は記録タブで追記してください。');
+};
+
+/* ---- export / import / sample ---- */
+function exportJ(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(recs)],{type:'application/json'}));a.download='fishlog-'+new Date().toISOString().slice(0,10)+'.json';a.click()}
+$('#imp').onchange=async e=>{try{const j=JSON.parse(await e.target.files[0].text());const ids=new Set(recs.map(r=>r.id));recs=recs.concat(j.filter(r=>!ids.has(r.id)));save();renderMap.fit=0;render()}catch(x){alert('読み込めませんでした')}e.target.value=''};
+function sample(){
+  const spots=[[35.318,134.105,24],[35.335,134.132,19],[35.352,134.160,28],[35.372,134.121,21],[35.301,134.082,17]],p=n=>String(n).padStart(2,'0');
+  for(let i=0;i<70;i++){
+    const y=2024+Math.floor(Math.random()*3),m=3+Math.floor(Math.random()*8),s=spots[Math.floor(Math.random()*5)];
+    const d=1+Math.floor(Math.random()*27),h=6+Math.floor(Math.random()*10),w=+(4+Math.sin((m-3)/7*Math.PI)*9+Math.random()*2).toFixed(1);
+    recs.push({id:'s'+uid(),dt:`${y}-${p(m)}-${p(d)}T${p(h)}:00`,sp:Math.random()<.55?'イワナ':'ヤマメ',size:+(s[2]-4+Math.random()*10+(m>=5&&m<=7?2:0)).toFixed(1),water:w,air:+(w+3+Math.random()*8).toFixed(1),wx:['晴れ','曇り','雨'][Math.floor(Math.random()*3)],fly:['パラシュート#14','エルクヘア#12','ニンフ#16'][Math.floor(Math.random()*3)],note:'サンプル',lat:+(s[0]+(Math.random()-.5)*.004).toFixed(5),lng:+(s[1]+(Math.random()-.5)*.004).toFixed(5)});
+  }
+  save();renderMap.fit=0;render();
+}
+function clearAll(){if(confirm('全ての記録を削除します。先に書き出しておくと安心です。よろしいですか？')){recs=[];save();render()}}
+render();
+</script></body></html>
